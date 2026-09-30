@@ -245,7 +245,11 @@ jobs:
             echo "CONFIG_CC_WERROR=n" >> arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}
         fi
         if [ ${{ env.OLD_ANDROID_SUPPORT }} = true ]; then
-            git apply $GITHUB_WORKSPACE/patches/OLD_ANDROID_SUPPORT.patch
+            git apply $GITHUB_WORKSPACE/patches/OLD_ANDROID_SUPPORT.patch || {
+            echo "[!] patch context mismatch, applying sdcardfs change directly"
+            sed -i 's/^\tdefault n$/\tdefault y/' fs/sdcardfs/Kconfig
+            }
+            grep -q "default n" fs/sdcardfs/Kconfig && echo "[!] WARNING: SDCARD_FS still defaults to n"
             if grep -q "CONFIG_MMC_CRYPTO_LEGACY" arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}; then
                 sed -i 's/# CONFIG_MMC_CRYPTO_LEGACY is not set/CONFIG_MMC_CRYPTO_LEGACY=y/g' arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}
                 sed -i 's/CONFIG_MMC_CRYPTO_LEGACY=n/CONFIG_MMC_CRYPTO_LEGACY=y/g' arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}

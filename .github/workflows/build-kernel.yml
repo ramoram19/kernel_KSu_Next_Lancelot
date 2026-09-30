@@ -195,6 +195,24 @@ jobs:
             git apply $GITHUB_WORKSPACE/patches/KSU_REVERT.patch
         fi
         
+    - name: Patch SukiSU for 4.14
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        KPM=KernelSU/kernel/kpm/kpm.c
+        if [ ! -f "$KPM" ]; then
+          echo "[!] $KPM not found, check the SukiSU integration"
+          exit 1
+        fi
+        BEFORE=$(grep -cE 'access_ok\([^,]+,' $KPM || true)
+        sed -i 's/access_ok(\([^,)]*\), *\([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' $KPM
+        AFTER=$(grep -c 'access_ok(VERIFY_READ' $KPM || true)
+        echo "[+] access_ok 2-arg -> 3-arg: $BEFORE call sites, $AFTER now VERIFY_READ"
+        if [ "$AFTER" != "$BEFORE" ] || [ "$AFTER" = "0" ]; then
+          echo "[!] access_ok patch did not fully apply"
+          grep -n 'access_ok' $KPM
+          exit 1
+        fi
+
     - name: Setup Configuration for Kernel
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel

@@ -224,22 +224,18 @@ jobs:
             sys.exit("[!] unpatched access_ok: %r" % leftover[:3])
 
         t = sup.read_text()
-        old = "DEFINE_MEMBER(task_struct, pids[PIDTYPE_PID].pid)"
-        new = ('{ .name = "pids[PIDTYPE_PID].pid", '
-               '.size = sizeof(struct pid *), '
-               '.offset = offsetof(struct task_struct, pids) + '
-               'PIDTYPE_PID * sizeof(((struct task_struct *)0)->pids[0]) + '
-               'offsetof(struct pid_link, pid) },')
+        # This tree reports 4.14 but already carries the >=4.19 task_struct
+        # layout (struct pid *thread_pid, no pids[] / struct pid_link), so
+        # SukiSU's "< 4.19" branch names members that do not exist here.
+        old = ("#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)\n"
+               "DEFINE_MEMBER(task_struct, pids[PIDTYPE_PID].pid)\n"
+               "#else\n"
+               "DEFINE_MEMBER(task_struct, thread_pid)\n"
+               "#endif")
         if old in t:
-            # struct pid_link is only forward declared unless linux/pid.h is
-            # pulled in, and offsetof on pids cannot resolve without it.
-            if "#include <linux/pid.h>" not in t:
-                t = t.replace("#include <linux/export.h>",
-                              "#include <linux/export.h>\n#include <linux/pid.h>", 1)
-                print("[+] super_access: added #include <linux/pid.h>")
-            sup.write_text(t.replace(old, new))
-            print("[+] super_access: offsetof array subscript replaced")
-        elif "offsetof(struct pid_link, pid)" in t:
+            sup.write_text(t.replace(old, "DEFINE_MEMBER(task_struct, thread_pid)"))
+            print("[+] super_access: task_struct pid member -> thread_pid")
+        elif "DEFINE_MEMBER(task_struct, thread_pid)" in t:
             print("[=] super_access already patched")
         else:
             sys.exit("[!] super_access: unexpected content")

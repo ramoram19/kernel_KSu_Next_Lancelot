@@ -321,6 +321,18 @@ jobs:
             hits += 1
         print("[+] MODULE_IMPORT_NS shim added to %d files" % hits)
 
+        # 11. clone3 (and its __NR_clone3) arrived in 5.3. 4.14 only has
+        #     clone, so the "same shape as clone" check must use clone alone.
+        hits = 0
+        for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+            t = head(p)
+            if "__NR_clone3" in t:
+                t = t.replace("case __NR_clone3:", "")
+                t = t.replace("id == __NR_clone3", "0")
+                p.write_text(t)
+                hits += 1
+        print("[+] __NR_clone3 neutralised in %d files" % hits)
+
         # 10. struct seccomp gained an atomic filter_count in 5.9. 4.14 only
         #     has mode and filter, so drop the line that touches it.
         sc2 = kl / "seccomp.h"

@@ -304,16 +304,20 @@ jobs:
 
         # 6. MODULE_IMPORT_NS arrived in 5.x. The code is linked into the
         #    image, so the namespace tag is metadata and a no-op is correct.
-        ci = base / "core/init.c"
-        if ci.is_file():
-            t = head(ci)
-            old = "MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);"
-            if old in t:
-                ci.write_text(t.replace(old,
-                    "#ifndef MODULE_IMPORT_NS\n#define MODULE_IMPORT_NS(name)\n#endif\n" + old))
-                print("[+] core/init.c: MODULE_IMPORT_NS shim added")
-            else:
-                print("[=] core/init.c: no MODULE_IMPORT_NS")
+        # The call site moved between releases (v4.2 core/init.c, v4.0 ksu.c),
+        # so handle every file that uses it.
+        guard = ("#ifndef MODULE_IMPORT_NS\n"
+                 "#define MODULE_IMPORT_NS(name)\n"
+                 "#endif\n")
+        hits = 0
+        for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+            t = head(p)
+            if "MODULE_IMPORT_NS(" not in t or "#ifndef MODULE_IMPORT_NS" in t:
+                continue
+            i = t.index("MODULE_IMPORT_NS(")
+            p.write_text(t[:i] + guard + t[i:])
+            hits += 1
+        print("[+] MODULE_IMPORT_NS shim added to %d files" % hits)
 
         # 7. linux/pgtable.h was split out of pagemap.h in 5.18.
         dst = pathlib.Path("include/linux/pgtable.h")

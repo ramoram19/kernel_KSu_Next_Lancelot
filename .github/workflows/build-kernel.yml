@@ -295,6 +295,7 @@ jobs:
             CC_CMD="ccache clang"
         fi
         make -j$(nproc --all) CC="$CC_CMD" O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.EXTRA_CMDS }} ${{ env.KERNEL_CONFIG }}
+        make -j$(nproc --all) CC="$CC_CMD" O=out ARCH=${{ env.KERNEL_ARCH }} ${{ env.EXTRA_CMDS }}
 
     - name: Check a kernel output files
       run: |

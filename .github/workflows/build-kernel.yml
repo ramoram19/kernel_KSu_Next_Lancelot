@@ -314,8 +314,10 @@ jobs:
             t = head(p)
             if "MODULE_IMPORT_NS(" not in t or "#ifndef MODULE_IMPORT_NS" in t:
                 continue
-            i = t.index("MODULE_IMPORT_NS(")
-            p.write_text(t[:i] + guard + t[i:])
+            # Prepend, not insert-before-first-use: the first use can sit
+            # inside a version guard that this kernel does not compile, and
+            # then the shim would never be defined for the branch in use.
+            p.write_text(guard + t)
             hits += 1
         print("[+] MODULE_IMPORT_NS shim added to %d files" % hits)
 

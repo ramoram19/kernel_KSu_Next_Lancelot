@@ -284,6 +284,29 @@ jobs:
             print("[+] core/init.c: MODULE_IMPORT_NS shim added")
         else:
             sys.exit("[!] core/init.c: unexpected content")
+
+        # Headers SukiSU expects that this 4.14 tree does not ship. Provide
+        # forwarding shims, but only when the real header is absent, so a
+        # kernel that does have it keeps its own definition.
+        root = pathlib.Path(".")
+        shims = [
+            ("include/linux/pgtable.h", ["linux/pagemap.h"]),
+            ("include/linux/minmax.h", ["linux/kernel.h"]),
+            ("include/linux/ioctl.h", ["linux/fs.h"]),
+            ("include/linux/hex.h", ["linux/kernel.h"]),
+        ]
+        for rel, targets in shims:
+            dst = root / rel
+            if dst.exists():
+                print("[=] %s already present, left alone" % rel)
+                continue
+            body = ["#ifndef _KSU_COMPAT_%s" % dst.stem.upper(),
+                    "#define _KSU_COMPAT_%s" % dst.stem.upper()]
+            body += ["#include <%s>" % t for t in targets]
+            body += ["#endif"]
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text("\n".join(body) + "\n")
+            print("[+] created %s -> %s" % (rel, ", ".join(targets)))
         PYEOF
 
     - name: Setup Configuration for Kernel

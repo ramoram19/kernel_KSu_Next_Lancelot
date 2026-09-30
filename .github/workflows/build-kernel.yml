@@ -157,6 +157,19 @@ jobs:
           echo "LOCALVERSION=" >> $GITHUB_ENV
         fi
 
+    - name: Patch upstream build errors
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        I2C_FILE=drivers/i2c/busses/i2c-mtk.c
+        if grep -q 'if ((id == 1) || (id == 6) || (id == 8))' $I2C_FILE; then
+          sed -i 's/if ((id == 1) || (id == 6) || (id == 8))/if ((i2c->id == 1) || (i2c->id == 6) || (i2c->id == 8))/' $I2C_FILE
+          echo "[+] fixed undeclared identifier 'id' in i2c-mtk.c"
+        elif grep -q 'if ((i2c->id == 1) || (i2c->id == 6) || (i2c->id == 8))' $I2C_FILE; then
+          echo "[=] i2c-mtk.c already fixed upstream"
+        else
+          echo "[!] i2c-mtk.c does not match the expected pattern, check it"
+        fi
+
     - name: Download source boot image
       if: env.BUILD_BOOT_IMG == 'true'
       run: |

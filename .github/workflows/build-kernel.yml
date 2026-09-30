@@ -386,7 +386,7 @@ jobs:
         fi
 
     - name: Zip AnyKernel3
-      if: env.USE_CUSTOM_ANYKERNEL3 == 'true' && env.CHECK_FILE_IS_OK == 'true'
+      if: env.CHECK_FILE_IS_OK == 'true'
       run: |
         cd kernel_workspace/AnyKernel3
         zip -r AnyKernel3.zip *

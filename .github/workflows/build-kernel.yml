@@ -321,6 +321,19 @@ jobs:
             hits += 1
         print("[+] MODULE_IMPORT_NS shim added to %d files" % hits)
 
+        # 12. pkg_observer.c is written against the 5.x fsnotify API
+        #     (handle_inode_event, fsnotify_add_inode_mark), which 4.14 does
+        #     not have. Its ksu_observer_init()/exit() are never called from
+        #     anywhere, so only its Makefile line keeps it in the build:
+        #     drop that line rather than port a whole subsystem.
+        fsh = kl / "fsnotify.h"
+        mk = base / "Makefile"
+        if fsh.is_file() and mk.is_file():
+            fst = head(fsh)
+            if "handle_inode_event" not in fst and "pkg_observer.o" in head(mk):
+                mk.write_text(head(mk).replace("kernelsu-objs += pkg_observer.o\n", ""))
+                print("[+] pkg_observer.o dropped (needs 5.x fsnotify API)")
+
         # 11. clone3 (and its __NR_clone3) arrived in 5.3. 4.14 only has
         #     clone, so the "same shape as clone" check must use clone alone.
         hits = 0

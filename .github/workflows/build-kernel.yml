@@ -321,6 +321,21 @@ jobs:
             hits += 1
         print("[+] MODULE_IMPORT_NS shim added to %d files" % hits)
 
+        # 14. force_sig() lost its task_struct argument in 5.11; 4.14 still
+        #     takes force_sig(sig, p).
+        sig_h = kl / "sched/signal.h"
+        if not sig_h.is_file():
+            sys.exit("[!] %s not found" % sig_h)
+        if re.search(r"force_sig\s*\(\s*int\s*,\s*struct\s+task_struct\s*\*", head(sig_h)):
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                t2, n2 = re.subn(r"force_sig\(([^,()]+)\)", r"force_sig(\1, current)", t)
+                if n2:
+                    p.write_text(t2)
+                    hits += n2
+            print("[+] force_sig -> force_sig(sig, current): %d sites" % hits)
+
         # 13. Symbols that live in a different header on 4.14. Add the
         #     header that this tree actually declares them in.
         for sym, hdr in [("MNT_DETACH", "linux/fs.h")]:

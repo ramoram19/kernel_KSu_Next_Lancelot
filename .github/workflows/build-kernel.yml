@@ -321,6 +321,22 @@ jobs:
             hits += 1
         print("[+] MODULE_IMPORT_NS shim added to %d files" % hits)
 
+        # 13. Symbols that live in a different header on 4.14. Add the
+        #     header that this tree actually declares them in.
+        for sym, hdr in [("MNT_DETACH", "linux/fs.h")]:
+            kdef = kl / hdr.replace("linux/", "", 1)
+            if not kdef.is_file():
+                continue
+            if sym not in head(kdef):
+                sys.exit("[!] %s not declared in %s" % (sym, kdef))
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                if sym in t and ("#include <%s>" % hdr) not in t:
+                    p.write_text("#include <%s>\n" % hdr + t)
+                    hits += 1
+            print("[+] %s: added %s to %d files" % (sym, hdr, hits))
+
         # 12. pkg_observer.c is written against the 5.x fsnotify API
         #     (handle_inode_event, fsnotify_add_inode_mark), which 4.14 does
         #     not have. Its ksu_observer_init()/exit() are never called from

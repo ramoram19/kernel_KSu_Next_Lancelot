@@ -199,7 +199,7 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         python3 - <<'PYEOF'
-        import re, sys, pathlib
+        import re, sys, os, pathlib
         base = pathlib.Path("KernelSU/kernel")
         kpm = base / "kpm/kpm.c"
         sup = base / "kpm/super_access.c"
@@ -228,7 +228,8 @@ jobs:
         # task_struct layouts: kernel-tree has the >=4.19 one (thread_pid),
         # kernel-tree-bootloop has the real 4.14 one (pids[]/struct pid_link).
         # Ask the kernel source which one it actually has.
-        sched = pathlib.Path("android-kernel/include/linux/sched.h")
+        sched = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+        sched = sched / "kernel_workspace/android-kernel/include/linux/sched.h"
         if not sched.is_file():
             sys.exit("[!] %s not found" % sched)
         st = sched.read_text(errors="replace")

@@ -278,6 +278,53 @@ jobs:
         else:
             sys.exit("[!] syscall_hook.h: unexpected content")
 
+        ksrc = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+        ksrc = ksrc / "kernel_workspace/android-kernel/include/linux"
+
+        # 4.14 spells it strncpy_from_unsafe_user(); the nofault spelling
+        # came later. Same signature, so a rename is enough.
+        ua = ksrc / "uaccess.h"
+        if not ua.is_file():
+            sys.exit("[!] %s not found" % ua)
+        uatxt = ua.read_text(errors="replace")
+        if "strncpy_from_user_nofault" not in uatxt:
+            if "strncpy_from_unsafe_user" not in uatxt:
+                sys.exit("[!] neither nofault nor unsafe strncpy_from_user in uaccess.h")
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = p.read_text(errors="replace")
+                if "strncpy_from_user_nofault" in t:
+                    p.write_text(t.replace("strncpy_from_user_nofault",
+                                           "strncpy_from_unsafe_user"))
+                    hits += 1
+            print("[+] strncpy_from_user_nofault -> unsafe, %d files" % hits)
+            if hits == 0:
+                sys.exit("[!] expected to rename strncpy_from_user_nofault somewhere")
+
+        # Neither ksys_close() (5.9) nor close_fd() (5.11) exists in 4.14;
+        # __close_fd() is the primitive both wrap, and it is what we need
+        # for closing a raw fd number.
+        util = base / "include/util.h"
+        if not util.is_file():
+            sys.exit("[!] %s not found" % util)
+        t = util.read_text()
+        old = "#define ksu_close_fd ksys_close"
+        if old in t:
+            new = ("static inline int ksu_close_fd(int fd)\n"
+                   "{\n"
+                   "\treturn __close_fd(current->files, fd);\n"
+                   "}")
+            t = t.replace(old, new)
+            if "#include <linux/sched.h>" not in t:
+                t = t.replace("#include <linux/syscalls.h>",
+                              "#include <linux/syscalls.h>\n#include <linux/sched.h>")
+            util.write_text(t)
+            print("[+] ksu_close_fd -> __close_fd(current->files, fd)")
+        elif "__close_fd" in t:
+            print("[=] util.h already patched")
+        else:
+            sys.exit("[!] util.h: unexpected content")
+
         ci = base / "core/init.c"
         if not ci.is_file():
             sys.exit("[!] %s not found" % ci)

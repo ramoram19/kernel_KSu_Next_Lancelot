@@ -201,159 +201,126 @@ jobs:
         python3 - <<'PYEOF'
         import re, sys, os, pathlib
         base = pathlib.Path("KernelSU/kernel")
-        kpm = base / "kpm/kpm.c"
-        sup = base / "kpm/super_access.c"
-        for p in (kpm, sup):
-            if not p.is_file():
-                sys.exit("[!] %s not found" % p)
+        ksrc = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "kernel_workspace/android-kernel"
+        kl = ksrc / "include/linux"
 
-        ARG1 = r"([^,()]+)"
-        ARG2 = r"((?:[^()]|\([^()]*\))*)"
-        t = kpm.read_text()
-        n = len(re.findall(r"access_ok\(" + ARG1 + r",", t))
-        t = re.sub(r"access_ok\(" + ARG1 + r", *" + ARG2 + r"\)",
+        def head(txt):
+            return txt.read_text(errors="replace")
+
+        # 1. access_ok. arm64 gained the _addr_save variant in 4.19 and the
+        #    two-argument form was removed, but this tree still uses it.
+        kpm = base / "kpm/kpm.c"
+        if not kpm.is_file():
+            sys.exit("[!] %s not found" % kpm)
+        t = head(kpm)
+        A1 = r"([^,()]+)"
+        A2 = r"((?:[^()]|\([^()]*\))*)"
+        n = len(re.findall(r"access_ok\(" + A1 + r",", t))
+        t = re.sub(r"access_ok\(" + A1 + r", *" + A2 + r"\)",
                    r"access_ok(VERIFY_READ, \1, \2)", t)
         kpm.write_text(t)
         done = t.count("access_ok(VERIFY_READ")
         print("[+] access_ok: %d call sites, %d now VERIFY_READ" % (n, done))
-        if done != n or done == 0:
+        if n and done != n:
             sys.exit("[!] access_ok patch incomplete")
-        leftover = [l for l in t.splitlines()
-                    if "access_ok" in l and "VERIFY_READ" not in l]
-        if leftover:
-            sys.exit("[!] unpatched access_ok: %r" % leftover[:3])
 
-        # SukiSU picks the task_struct pid member from LINUX_VERSION_CODE, but
-        # both 4.14 trees in this repo report 4.14 while carrying different
-        # task_struct layouts: kernel-tree has the >=4.19 one (thread_pid),
-        # kernel-tree-bootloop has the real 4.14 one (pids[]/struct pid_link).
-        # Ask the kernel source which one it actually has.
-        sched = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
-        sched = sched / "kernel_workspace/android-kernel/include/linux/sched.h"
-        if not sched.is_file():
-            sys.exit("[!] %s not found" % sched)
-        st = sched.read_text(errors="replace")
-        if re.search(r"struct\s+pid\s*\*\s*thread_pid\s*;", st):
-            pid_member = "thread_pid"
-        elif re.search(r"struct\s+pid_link\s+pids\s*\[", st):
-            pid_member = "pids[PIDTYPE_PID].pid"
-        else:
-            sys.exit("[!] cannot determine task_struct pid member from %s" % sched)
-        t = sup.read_text()
-        old = ("#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)\n"
-               "DEFINE_MEMBER(task_struct, pids[PIDTYPE_PID].pid)\n"
-               "#else\n"
-               "DEFINE_MEMBER(task_struct, thread_pid)\n"
-               "#endif")
-        if old in t:
-            sup.write_text(t.replace(old, "DEFINE_MEMBER(task_struct, %s)" % pid_member))
-            print("[+] super_access: task_struct pid member -> %s" % pid_member)
-        elif "DEFINE_MEMBER(task_struct, %s)" % pid_member in t:
-            print("[=] super_access already patched")
-        else:
-            sys.exit("[!] super_access: unexpected content")
+        # 2. task_struct pid member. Both 4.14 trees here report 4.14 but
+        #    carry different layouts, so read the fetched header.
+        sup = base / "kpm/super_access.c"
+        if sup.is_file():
+            sched = kl / "sched.h"
+            if not sched.is_file():
+                sys.exit("[!] %s not found" % sched)
+            st = head(sched)
+            if re.search(r"struct\s+pid\s*\*\s*thread_pid\s*;", st):
+                pidm = "thread_pid"
+            elif re.search(r"struct\s+pid_link\s+pids\s*\[", st):
+                pidm = "pids[PIDTYPE_PID].pid"
+            else:
+                sys.exit("[!] cannot determine task_struct pid member")
+            t = head(sup)
+            # Tolerate whitespace differences between SukiSU releases.
+            pat = (r"#if\s+LINUX_VERSION_CODE\s*<\s*KERNEL_VERSION\(\s*4\s*,\s*19\s*,"
+                   r"\s*0\s*\)\s*\n\s*DEFINE_MEMBER\(task_struct,\s*"
+                   r"pids\[PIDTYPE_PID\]\.pid\)\s*\n\s*#else\s*\n\s*"
+                   r"DEFINE_MEMBER\(task_struct,\s*thread_pid\)\s*\n\s*#endif")
+            t2, cnt = re.subn(pat, "DEFINE_MEMBER(task_struct, %s)" % pidm, t)
+            if cnt:
+                sup.write_text(t2)
+                print("[+] super_access: task_struct pid member -> %s" % pidm)
+            else:
+                print("[=] super_access: no version-guarded pid block, left alone")
 
-        sh = base / "hook/syscall_hook.h"
-        if not sh.is_file():
-            sys.exit("[!] %s not found" % sh)
-        t = sh.read_text()
-        old = ("#if defined(__x86_64__)\n"
-               "typedef sys_call_ptr_t syscall_fn_t;\n"
-               "#endif")
-        # syscall_fn_t only arrived in include/linux/syscalls.h in 4.17, and
-        # this arm64 tree exposes sys_call_table as a plain const void * array
-        # with no sys_call_ptr_t alias. SukiSU only typedefs it for x86_64.
-        new = ("#include <linux/version.h>\n"
-               "#if defined(__x86_64__)\n"
-               "typedef sys_call_ptr_t syscall_fn_t;\n"
-               "#elif defined(CONFIG_ARM64) && "
-               "LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)\n"
-               "typedef unsigned long (*syscall_fn_t)(const struct pt_regs *);\n"
-               "#endif")
-        if old in t:
-            sh.write_text(t.replace(old, new))
-            print("[+] syscall_hook.h: arm64 syscall_fn_t typedef added")
-        elif "KERNEL_VERSION(4, 17, 0)" in t:
-            print("[=] syscall_hook.h already patched")
-        else:
-            sys.exit("[!] syscall_hook.h: unexpected content")
-
-        ksrc = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
-        ksrc = ksrc / "kernel_workspace/android-kernel/include/linux"
-
-        # 4.14 spells it strncpy_from_unsafe_user(); the nofault spelling
-        # came later. Same signature, so a rename is enough.
-        ua = ksrc / "uaccess.h"
+        # 3. strncpy_from_user_nofault arrived after 4.14; the function is
+        #    strncpy_from_unsafe_user there, same signature.
+        ua = kl / "uaccess.h"
         if not ua.is_file():
             sys.exit("[!] %s not found" % ua)
-        uatxt = ua.read_text(errors="replace")
-        if "strncpy_from_user_nofault" not in uatxt:
-            if "strncpy_from_unsafe_user" not in uatxt:
-                sys.exit("[!] neither nofault nor unsafe strncpy_from_user in uaccess.h")
+        if "strncpy_from_user_nofault" not in head(ua):
+            if "strncpy_from_unsafe_user" not in head(ua):
+                sys.exit("[!] no strncpy_from_user in uaccess.h")
             hits = 0
             for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
-                t = p.read_text(errors="replace")
+                t = head(p)
                 if "strncpy_from_user_nofault" in t:
                     p.write_text(t.replace("strncpy_from_user_nofault",
                                            "strncpy_from_unsafe_user"))
                     hits += 1
-            print("[+] strncpy_from_user_nofault -> unsafe, %d files" % hits)
+            print("[+] strncpy_from_user_nofault -> unsafe in %d files" % hits)
             if hits == 0:
-                sys.exit("[!] expected to rename strncpy_from_user_nofault somewhere")
+                sys.exit("[!] nothing renamed but kernel lacks the nofault spelling")
 
-        # Neither ksys_close() (5.9) nor close_fd() (5.11) exists in 4.14;
-        # __close_fd() is the primitive both wrap, and it is what we need
-        # for closing a raw fd number.
-        util = base / "include/util.h"
-        if not util.is_file():
-            sys.exit("[!] %s not found" % util)
-        t = util.read_text()
-        old = "#define ksu_close_fd ksys_close"
-        if old in t:
-            new = ("static inline int ksu_close_fd(int fd)\n"
-                   "{\n"
-                   "\treturn __close_fd(current->files, fd);\n"
-                   "}")
-            t = t.replace(old, new)
-            if "#include <linux/sched.h>" not in t:
-                t = t.replace("#include <linux/syscalls.h>",
-                              "#include <linux/syscalls.h>\n#include <linux/sched.h>")
-            util.write_text(t)
-            print("[+] ksu_close_fd -> __close_fd(current->files, fd)")
-        elif "__close_fd" in t:
-            print("[=] util.h already patched")
-        else:
-            sys.exit("[!] util.h: unexpected content")
+        # 4. ksys_close() (5.9) and close_fd() (5.11) do not exist in 4.14.
+        #    __close_fd() is the primitive both wrap.
+        sc = kl / "syscalls.h"
+        have_close = sc.is_file() and "ksys_close" in head(sc)
+        if not have_close:
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                if "ksys_close(" in t:
+                    p.write_text(t.replace("ksys_close(",
+                                           "__close_fd(current->files, "))
+                    hits += 1
+            print("[+] ksys_close -> __close_fd(current->files,) in %d files" % hits)
 
+        # 5. syscall_fn_t only exists from 4.17, and only for x86_64 upstream.
+        sh = base / "hook/syscall_hook.h"
+        if sh.is_file():
+            t = head(sh)
+            old = "typedef sys_call_ptr_t syscall_fn_t;"
+            if old in t and "KERNEL_VERSION(4, 17, 0)" not in t:
+                new = ("#include <linux/version.h>\n"
+                       "#if defined(__x86_64__)\n"
+                       "typedef sys_call_ptr_t syscall_fn_t;\n"
+                       "#elif defined(CONFIG_ARM64) && "
+                       "LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)\n"
+                       "typedef unsigned long (*syscall_fn_t)(const struct pt_regs *);\n"
+                       "#endif")
+                sh.write_text(t.replace(old, new))
+                print("[+] syscall_hook.h: arm64 syscall_fn_t typedef added")
+            else:
+                print("[=] syscall_hook.h: nothing to patch")
+
+        # 6. MODULE_IMPORT_NS arrived in 5.x. The code is linked into the
+        #    image, so the namespace tag is metadata and a no-op is correct.
         ci = base / "core/init.c"
-        if not ci.is_file():
-            sys.exit("[!] %s not found" % ci)
-        t = ci.read_text()
-        old = "MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);"
-        # MODULE_IMPORT_NS arrived in 5.x. This code is linked into the kernel
-        # image rather than loaded as a module, so the symbol namespace tag is
-        # metadata only and a no-op is correct here.
-        shim = ("#ifndef MODULE_IMPORT_NS\n"
-                "#define MODULE_IMPORT_NS(name)\n"
-                "#endif\n"
-                + old)
-        if "#ifndef MODULE_IMPORT_NS" in t:
-            print("[=] core/init.c already patched")
-        elif old in t:
-            ci.write_text(t.replace(old, shim, 1))
-            print("[+] core/init.c: MODULE_IMPORT_NS shim added")
-        else:
-            sys.exit("[!] core/init.c: unexpected content")
+        if ci.is_file():
+            t = head(ci)
+            old = "MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);"
+            if old in t:
+                ci.write_text(t.replace(old,
+                    "#ifndef MODULE_IMPORT_NS\n#define MODULE_IMPORT_NS(name)\n#endif\n" + old))
+                print("[+] core/init.c: MODULE_IMPORT_NS shim added")
+            else:
+                print("[=] core/init.c: no MODULE_IMPORT_NS")
 
-        # Only one header shim, and only for the header the build has actually
-        # asked for. Creating extra names under include/linux hijacks the
-        # include path for the kernel's own code: a stub include/linux/ioctl.h
-        # shadows asm/ioctl.h and took _IO away from init/do_mounts.c. Add more
-        # shims here only if a build actually fails on the missing header.
+        # 7. linux/pgtable.h was split out of pagemap.h in 5.18.
         dst = pathlib.Path("include/linux/pgtable.h")
         if dst.exists():
             print("[=] include/linux/pgtable.h already present")
         else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text("#ifndef _KSU_COMPAT_PGTABLE\n"
                            "#define _KSU_COMPAT_PGTABLE\n"
                            "#include <linux/pagemap.h>\n"

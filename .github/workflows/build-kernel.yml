@@ -264,6 +264,26 @@ jobs:
             print("[=] syscall_hook.h already patched")
         else:
             sys.exit("[!] syscall_hook.h: unexpected content")
+
+        ci = base / "core/init.c"
+        if not ci.is_file():
+            sys.exit("[!] %s not found" % ci)
+        t = ci.read_text()
+        old = "MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);"
+        # MODULE_IMPORT_NS arrived in 5.x. This code is linked into the kernel
+        # image rather than loaded as a module, so the symbol namespace tag is
+        # metadata only and a no-op is correct here.
+        shim = ("#ifndef MODULE_IMPORT_NS\n"
+                "#define MODULE_IMPORT_NS(name)\n"
+                "#endif\n"
+                + old)
+        if "#ifndef MODULE_IMPORT_NS" in t:
+            print("[=] core/init.c already patched")
+        elif old in t:
+            ci.write_text(t.replace(old, shim, 1))
+            print("[+] core/init.c: MODULE_IMPORT_NS shim added")
+        else:
+            sys.exit("[!] core/init.c: unexpected content")
         PYEOF
 
     - name: Setup Configuration for Kernel

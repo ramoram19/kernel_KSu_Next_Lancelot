@@ -184,13 +184,13 @@ jobs:
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" | bash -s v3.4.0-legacy
-        if [ -d KernelSU-Next ]; then
-            KSU_VERSION="_$(cd KernelSU-Next && /usr/bin/git describe --tags --abbrev=0)"
+        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s ${{ env.SUKISU_VERSION }}
+        if [ -d KernelSU ]; then
+            KSU_VERSION="_SukiSU-$(cd KernelSU && /usr/bin/git describe --tags --abbrev=0)"
         else
             KSU_VERSION=""
         fi
-        echo "UPLOADNAME=-KernelSU$KSU_VERSION" >> $GITHUB_ENV
+        echo "UPLOADNAME=$KSU_VERSION" >> $GITHUB_ENV
         if [ ${{ env.KSU_REVERT }} = true ]; then
             git apply $GITHUB_WORKSPACE/patches/KSU_REVERT.patch
         fi
@@ -214,13 +214,13 @@ jobs:
                 echo "CONFIG_HAVE_KPROBES=y" >> arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}
                 echo "CONFIG_KPROBE_EVENTS=y" >> arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}
             fi
-        for config in CONFIG_KSU=y \
-                      CONFIG_KSU_KPROBE_HOOKS=y \
-                      CONFIG_KPROBES=y \
-                      CONFIG_HAVE_KPROBES=y \
-                      CONFIG_KPROBE_EVENTS=y \
-                      CONFIG_KALLSYMS=y \
-                      CONFIG_KALLSYMS_ALL=y
+          for config in CONFIG_KSU=y \
+                        CONFIG_KPM=y \
+                        CONFIG_KPROBES=y \
+                        CONFIG_HAVE_KPROBES=y \
+                        CONFIG_KPROBE_EVENTS=y \
+                        CONFIG_KALLSYMS=y \
+                        CONFIG_KALLSYMS_ALL=y
                      
         do
         echo "$config" >> arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}

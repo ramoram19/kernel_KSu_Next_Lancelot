@@ -285,28 +285,20 @@ jobs:
         else:
             sys.exit("[!] core/init.c: unexpected content")
 
-        # Headers SukiSU expects that this 4.14 tree does not ship. Provide
-        # forwarding shims, but only when the real header is absent, so a
-        # kernel that does have it keeps its own definition.
-        root = pathlib.Path(".")
-        shims = [
-            ("include/linux/pgtable.h", ["linux/pagemap.h"]),
-            ("include/linux/minmax.h", ["linux/kernel.h"]),
-            ("include/linux/ioctl.h", ["linux/fs.h"]),
-            ("include/linux/hex.h", ["linux/kernel.h"]),
-        ]
-        for rel, targets in shims:
-            dst = root / rel
-            if dst.exists():
-                print("[=] %s already present, left alone" % rel)
-                continue
-            body = ["#ifndef _KSU_COMPAT_%s" % dst.stem.upper(),
-                    "#define _KSU_COMPAT_%s" % dst.stem.upper()]
-            body += ["#include <%s>" % t for t in targets]
-            body += ["#endif"]
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text("\n".join(body) + "\n")
-            print("[+] created %s -> %s" % (rel, ", ".join(targets)))
+        # Only one header shim, and only for the header the build has actually
+        # asked for. Creating extra names under include/linux hijacks the
+        # include path for the kernel's own code: a stub include/linux/ioctl.h
+        # shadows asm/ioctl.h and took _IO away from init/do_mounts.c. Add more
+        # shims here only if a build actually fails on the missing header.
+        dst = pathlib.Path("include/linux/pgtable.h")
+        if dst.exists():
+            print("[=] include/linux/pgtable.h already present")
+        else:
+            dst.write_text("#ifndef _KSU_COMPAT_PGTABLE\n"
+                           "#define _KSU_COMPAT_PGTABLE\n"
+                           "#include <linux/pagemap.h>\n"
+                           "#endif\n")
+            print("[+] created include/linux/pgtable.h -> linux/pagemap.h")
         PYEOF
 
     - name: Setup Configuration for Kernel

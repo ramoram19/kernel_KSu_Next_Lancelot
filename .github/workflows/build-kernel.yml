@@ -239,6 +239,31 @@ jobs:
             print("[=] super_access already patched")
         else:
             sys.exit("[!] super_access: unexpected content")
+
+        sh = base / "hook/syscall_hook.h"
+        if not sh.is_file():
+            sys.exit("[!] %s not found" % sh)
+        t = sh.read_text()
+        old = ("#if defined(__x86_64__)\n"
+               "typedef sys_call_ptr_t syscall_fn_t;\n"
+               "#endif")
+        # syscall_fn_t only arrived in include/linux/syscalls.h in 4.17, and
+        # this arm64 tree exposes sys_call_table as a plain const void * array
+        # with no sys_call_ptr_t alias. SukiSU only typedefs it for x86_64.
+        new = ("#include <linux/version.h>\n"
+               "#if defined(__x86_64__)\n"
+               "typedef sys_call_ptr_t syscall_fn_t;\n"
+               "#elif defined(CONFIG_ARM64) && "
+               "LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)\n"
+               "typedef unsigned long (*syscall_fn_t)(const struct pt_regs *);\n"
+               "#endif")
+        if old in t:
+            sh.write_text(t.replace(old, new))
+            print("[+] syscall_hook.h: arm64 syscall_fn_t typedef added")
+        elif "KERNEL_VERSION(4, 17, 0)" in t:
+            print("[=] syscall_hook.h already patched")
+        else:
+            sys.exit("[!] syscall_hook.h: unexpected content")
         PYEOF
 
     - name: Setup Configuration for Kernel

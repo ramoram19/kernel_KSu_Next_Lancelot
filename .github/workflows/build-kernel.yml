@@ -168,9 +168,9 @@ jobs:
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-dev
-        if [ -d KernelSU ]; then
-            KSU_VERSION="_$(cd KernelSU && expr $(/usr/bin/git rev-list --count HEAD) + 10200)"
+        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" | bash -s v3.4.0-legacy
+        if [ -d KernelSU-Next ]; then
+            KSU_VERSION="_$(cd KernelSU-Next && /usr/bin/git describe --tags --abbrev=0)"
         else
             KSU_VERSION=""
         fi
@@ -199,25 +199,10 @@ jobs:
                 echo "CONFIG_KPROBE_EVENTS=y" >> arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}
             fi
         for config in CONFIG_KSU=y \
-                      CONFIG_KSU_DEBUG=y \
-                      CONFIG_KSU_SUSFS=y \
-                      CONFIG_KSU_SUSFS_SUS_PATH=y \
-                      CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y \
-                      CONFIG_KSU_SUSFS_SUS_MOUNT=y \
-                      CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y \
-                      CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y \
-                      CONFIG_KSU_SUSFS_SUS_KSTAT=y \
-                      CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y \
-                      CONFIG_KSU_SUSFS_TRY_UMOUNT=y \
-                      CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y \
-                      CONFIG_KSU_SUSFS_SPOOF_UNAME=y \
-                      CONFIG_KSU_SUSFS_ENABLE_LOG=y \
-                      CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y \
-                      CONFIG_KSU_SUSFS_SPOOF_PROC_CMDLINE=y \
-                      CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
-                      CONFIG_KSU_SUSFS_SUS_SU=y \
-                      CONFIG_WITH_KPROBES=n \
-                      CONFIG_KPM=y \
+                      CONFIG_KSU_KPROBE_HOOKS=y \
+                      CONFIG_KPROBES=y \
+                      CONFIG_HAVE_KPROBES=y \
+                      CONFIG_KPROBE_EVENTS=y \
                       CONFIG_KALLSYMS=y \
                       CONFIG_KALLSYMS_ALL=y
                      

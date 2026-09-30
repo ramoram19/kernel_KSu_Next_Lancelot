@@ -321,6 +321,34 @@ jobs:
             hits += 1
         print("[+] MODULE_IMPORT_NS shim added to %d files" % hits)
 
+        # 8. task_work_add() took a bool in 4.14; the TWA_* enum that
+        #    SukiSU passes arrived in 5.15.
+        tw = kl / "task_work.h"
+        if not tw.is_file():
+            sys.exit("[!] %s not found" % tw)
+        twt = head(tw)
+        if "TWA_RESUME" not in twt:
+            if not re.search(r"task_work_add\s*\([^;]*\bbool\b", twt):
+                sys.exit("[!] unrecognised task_work_add signature")
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                if "TWA_RESUME" in t:
+                    p.write_text(t.replace("TWA_RESUME", "true"))
+                    hits += 1
+            print("[+] TWA_RESUME -> true in %d files" % hits)
+
+        # 9. put_task_struct() is declared in sched/task.h since 4.11 and
+        #    some SukiSU files use it without including that header.
+        hits = 0
+        for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+            t = head(p)
+            if re.search(r"\bput_task_struct\s*\(", t) and \
+                    "linux/sched/task.h" not in t:
+                p.write_text("#include <linux/sched/task.h>\n" + t)
+                hits += 1
+        print("[+] sched/task.h added to %d files using put_task_struct" % hits)
+
         # 7. linux/pgtable.h was split out of pagemap.h in 5.18.
         dst = pathlib.Path("include/linux/pgtable.h")
         if dst.exists():

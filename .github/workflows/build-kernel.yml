@@ -223,19 +223,31 @@ jobs:
         if leftover:
             sys.exit("[!] unpatched access_ok: %r" % leftover[:3])
 
+        # SukiSU picks the task_struct pid member from LINUX_VERSION_CODE, but
+        # both 4.14 trees in this repo report 4.14 while carrying different
+        # task_struct layouts: kernel-tree has the >=4.19 one (thread_pid),
+        # kernel-tree-bootloop has the real 4.14 one (pids[]/struct pid_link).
+        # Ask the kernel source which one it actually has.
+        sched = pathlib.Path("android-kernel/include/linux/sched.h")
+        if not sched.is_file():
+            sys.exit("[!] %s not found" % sched)
+        st = sched.read_text(errors="replace")
+        if re.search(r"struct\s+pid\s*\*\s*thread_pid\s*;", st):
+            pid_member = "thread_pid"
+        elif re.search(r"struct\s+pid_link\s+pids\s*\[", st):
+            pid_member = "pids[PIDTYPE_PID].pid"
+        else:
+            sys.exit("[!] cannot determine task_struct pid member from %s" % sched)
         t = sup.read_text()
-        # This tree reports 4.14 but already carries the >=4.19 task_struct
-        # layout (struct pid *thread_pid, no pids[] / struct pid_link), so
-        # SukiSU's "< 4.19" branch names members that do not exist here.
         old = ("#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0)\n"
                "DEFINE_MEMBER(task_struct, pids[PIDTYPE_PID].pid)\n"
                "#else\n"
                "DEFINE_MEMBER(task_struct, thread_pid)\n"
                "#endif")
         if old in t:
-            sup.write_text(t.replace(old, "DEFINE_MEMBER(task_struct, thread_pid)"))
-            print("[+] super_access: task_struct pid member -> thread_pid")
-        elif "DEFINE_MEMBER(task_struct, thread_pid)" in t:
+            sup.write_text(t.replace(old, "DEFINE_MEMBER(task_struct, %s)" % pid_member))
+            print("[+] super_access: task_struct pid member -> %s" % pid_member)
+        elif "DEFINE_MEMBER(task_struct, %s)" % pid_member in t:
             print("[=] super_access already patched")
         else:
             sys.exit("[!] super_access: unexpected content")

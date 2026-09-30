@@ -321,6 +321,22 @@ jobs:
             hits += 1
         print("[+] MODULE_IMPORT_NS shim added to %d files" % hits)
 
+        # 10. struct seccomp gained an atomic filter_count in 5.9. 4.14 only
+        #     has mode and filter, so drop the line that touches it.
+        sc2 = kl / "seccomp.h"
+        if not sc2.is_file():
+            sys.exit("[!] %s not found" % sc2)
+        sct = head(sc2)
+        if "filter_count" not in sct:
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                if "seccomp.filter_count" in t:
+                    keep = [l for l in t.splitlines(True) if "seccomp.filter_count" not in l]
+                    p.write_text("".join(keep))
+                    hits += 1
+            print("[+] seccomp.filter_count lines dropped from %d files" % hits)
+
         # 8. task_work_add() took a bool in 4.14; the TWA_* enum that
         #    SukiSU passes arrived in 5.15.
         tw = kl / "task_work.h"

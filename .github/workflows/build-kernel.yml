@@ -198,20 +198,46 @@ jobs:
     - name: Patch SukiSU for 4.14
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        KPM=KernelSU/kernel/kpm/kpm.c
-        if [ ! -f "$KPM" ]; then
-          echo "[!] $KPM not found, check the SukiSU integration"
-          exit 1
-        fi
-        BEFORE=$(grep -cE 'access_ok\([^,]+,' $KPM || true)
-        sed -i 's/access_ok(\([^,)]*\), *\([^)]*\))/access_ok(VERIFY_READ, \1, \2)/g' $KPM
-        AFTER=$(grep -c 'access_ok(VERIFY_READ' $KPM || true)
-        echo "[+] access_ok 2-arg -> 3-arg: $BEFORE call sites, $AFTER now VERIFY_READ"
-        if [ "$AFTER" != "$BEFORE" ] || [ "$AFTER" = "0" ]; then
-          echo "[!] access_ok patch did not fully apply"
-          grep -n 'access_ok' $KPM
-          exit 1
-        fi
+        python3 - <<'PYEOF'
+        import re, sys, pathlib
+        base = pathlib.Path("KernelSU/kernel")
+        kpm = base / "kpm/kpm.c"
+        sup = base / "kpm/super_access.c"
+        for p in (kpm, sup):
+            if not p.is_file():
+                sys.exit("[!] %s not found" % p)
+
+        ARG1 = r"([^,()]+)"
+        ARG2 = r"((?:[^()]|\([^()]*\))*)"
+        t = kpm.read_text()
+        n = len(re.findall(r"access_ok\(" + ARG1 + r",", t))
+        t = re.sub(r"access_ok\(" + ARG1 + r", *" + ARG2 + r"\)",
+                   r"access_ok(VERIFY_READ, \1, \2)", t)
+        kpm.write_text(t)
+        done = t.count("access_ok(VERIFY_READ")
+        print("[+] access_ok: %d call sites, %d now VERIFY_READ" % (n, done))
+        if done != n or done == 0:
+            sys.exit("[!] access_ok patch incomplete")
+        leftover = [l for l in t.splitlines()
+                    if "access_ok" in l and "VERIFY_READ" not in l]
+        if leftover:
+            sys.exit("[!] unpatched access_ok: %r" % leftover[:3])
+
+        t = sup.read_text()
+        old = "DEFINE_MEMBER(task_struct, pids[PIDTYPE_PID].pid)"
+        new = ('{ .name = "pids[PIDTYPE_PID].pid", '
+               '.size = sizeof(struct pid *), '
+               '.offset = offsetof(struct task_struct, pids) + '
+               'PIDTYPE_PID * sizeof(struct pid_link) + '
+               'offsetof(struct pid_link, pid) },')
+        if old in t:
+            sup.write_text(t.replace(old, new))
+            print("[+] super_access: offsetof array subscript replaced")
+        elif "offsetof(struct task_struct, pids)" in t:
+            print("[=] super_access already patched")
+        else:
+            sys.exit("[!] super_access: unexpected content")
+        PYEOF
 
     - name: Setup Configuration for Kernel
       run: |

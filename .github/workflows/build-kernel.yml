@@ -719,7 +719,9 @@ jobs:
             t = head(sep)
             # The rhashtable key-params global is left dangling by the rewrite above
             # and names a type this kernel does not have, so drop it.
-            t = re.sub(r"(?ms)^                lines = t.split("\n")
+            t = head(sep)
+            if "flex_array.h" not in t:
+                lines = t.split("\n")
                 last_inc = max(i for i, ln in enumerate(lines) if ln.startswith("#include"))
                 lines.insert(last_inc + 1, "#include <linux/flex_array.h>")
                 t = "\n".join(lines)

@@ -736,17 +736,41 @@ jobs:
             t = re.sub(r"db->type_attr_map_array\[([^\]]+)\]",
                        r"flex_array_get_ptr(db->type_attr_map_array, \1)", t)
             sep.write_text(t)
-            # 20b. rules.c: selinux_state.policy changed to policydb under ss
+            # 20b. rules.c reaches the policydb through selinux_state.policy on
+            #     5.x. This tree is 4.14: there is no struct selinux_policy and
+            #     no selinux_state.policy; the policydb is embedded by value in
+            #     struct selinux_ss, reached via selinux_state.ss.
+            #     Same access the kernel itself uses (ss/services.c).
+            #     selinux_status_update_policyload() and avc_ss_reset() already
+            #     match the 4.14 signatures, so they are left untouched.
             rc = base / "selinux/rules.c"
             if rc.is_file():
                 rt = head(rc)
-                rt, n1 = re.subn(r"selinux_state\.policy", "selinux_state.ss->policydb", rt)
-                rt, n2 = re.subn(r"selinux_status_update_policyload\(&selinux_state,",
-                                 "selinux_status_update_policyload(&selinux_state.ss->policydb,",
-                                 rt)
+                OLD_GPD = (
+                    "static struct policydb *get_policydb(void)\n"
+                    "{\n"
+                    "    struct policydb *db;\n"
+                    "    struct selinux_policy *policy = selinux_state.policy;\n"
+                    "    db = &policy->policydb;\n"
+                    "    return db;\n"
+                    "}\n"
+                )
+                NEW_GPD = (
+                    "static struct policydb *get_policydb(void)\n"
+                    "{\n"
+                    "    return &selinux_state.ss->policydb;\n"
+                    "}\n"
+                )
+                if OLD_GPD in rt:
+                    rt = rt.replace(OLD_GPD, NEW_GPD, 1)
+                else:
+                    rt, n = re.subn(
+                        r"static struct policydb \*get_policydb\(void\)\s*\{.*?\n\}",
+                        NEW_GPD, rt, count=1, flags=re.S)
+                    if not n:
+                        raise SystemExit("get_policydb() not found in rules.c")
                 rc.write_text(rt)
-                if n1 or n2:
-                    print("[+] rules.c: patched selinux_state access (%d,%d)" % (n1,n2))
+                print("[+] rules.c: get_policydb() -> selinux_state.ss->policydb")
             print("[+] sepolicy ported to hashtab/flex_array: 4 functions")
 
         # 19. SukiSU ships kernel/selinux/selinux.h, which shadows the
@@ -946,11 +970,20 @@ jobs:
             echo "CONFIG_CC_WERROR=n" >> arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}
         fi
         if [ ${{ env.OLD_ANDROID_SUPPORT }} = true ]; then
-            git apply $GITHUB_WORKSPACE/patches/OLD_ANDROID_SUPPORT.patch || {
-            echo "[!] patch context mismatch, applying sdcardfs change directly"
-            sed -i 's/^\tdefault n$/\tdefault y/' fs/sdcardfs/Kconfig
-            }
-            grep -q "default n" fs/sdcardfs/Kconfig && echo "[!] WARNING: SDCARD_FS still defaults to n"
+            # OLD_ANDROID_SUPPORT.patch only flips SDCARD_FS/SDCARD_FS_FADV_NOACTIVE
+            # to default y. Android 12 dropped fs/sdcardfs entirely, so on this
+            # tree the hunk has no target and the patch is a no-op. Keep the
+            # MMC_CRYPTO_LEGACY part, which is still relevant, and skip sdcardfs
+            # instead of letting git apply emit a hard error.
+            if [ -f fs/sdcardfs/Kconfig ]; then
+                git apply $GITHUB_WORKSPACE/patches/OLD_ANDROID_SUPPORT.patch || {
+                echo "[!] patch context mismatch, applying sdcardfs change directly"
+                sed -i 's/^\tdefault n$/\tdefault y/' fs/sdcardfs/Kconfig
+                }
+                grep -q "default n" fs/sdcardfs/Kconfig && echo "[!] WARNING: SDCARD_FS still defaults to n"
+            else
+                echo "[*] fs/sdcardfs absent (Android 12+): skipping OLD_ANDROID_SUPPORT hunk"
+            fi
             if grep -q "CONFIG_MMC_CRYPTO_LEGACY" arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}; then
                 sed -i 's/# CONFIG_MMC_CRYPTO_LEGACY is not set/CONFIG_MMC_CRYPTO_LEGACY=y/g' arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}
                 sed -i 's/CONFIG_MMC_CRYPTO_LEGACY=n/CONFIG_MMC_CRYPTO_LEGACY=y/g' arch/${{ env.KERNEL_ARCH }}/configs/${{ env.KERNEL_CONFIG }}

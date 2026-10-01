@@ -484,6 +484,252 @@ jobs:
         else:
             print("[=] every referenced file_operations member exists here")
 
+        # 20. SukiSU's sepolicy engine drives the SELinux policydb directly, and
+        #     four of its functions assume the 5.x rhashtable filename transitions
+        #     plus plain array policydb fields. This tree still uses the pre-4.16
+        #     hashtab and struct flex_array, so rewrite those against the layout
+        #     this kernel actually uses, mirroring security/selinux/ss/policydb.c.
+        sep = base / "selinux/sepolicy.c"
+        if not sep.is_file():
+            sys.exit("[!] %s not found" % sep)
+        pdbh = ksrc / "security/selinux/ss/policydb.h"
+        if not pdbh.is_file():
+            sys.exit("[!] %s not found" % pdbh)
+        pdb = head(pdbh)
+        legacy = ("struct flex_array" in pdb) and \
+                 re.search(r"struct\s+hashtab\s*\*\s*filename_trans\s*;", pdb) is not None
+        if not legacy:
+            print("[=] policydb is not the legacy hashtab/flex_array layout, left alone")
+        else:
+            def find_defn(txt, name):
+                """Definition of name, skipping its forward declaration."""
+                lines = txt.split("\n")
+                pat = re.compile(r"^(?:static\s+)?[A-Za-z_][\w \*]*\b%s\s*\(" % re.escape(name))
+                i = 0
+                while i < len(lines):
+                    if pat.match(lines[i]):
+                        j = i
+                        sig = []
+                        while j < len(lines) and j - i <= 12:
+                            sig.append(lines[j])
+                            st = lines[j].strip()
+                            if st.endswith("{") and not st.startswith("#"):
+                                break
+                            if st.endswith(";") and not st.startswith("#"):
+                                break
+                            j += 1
+                        if " ".join(sig).rstrip().endswith(";"):
+                            i = j + 1
+                            continue
+                        k = j
+                        while k < len(lines) and lines[k] != "}":
+                            k += 1
+                        if k < len(lines):
+                            return i, k
+                    i += 1
+                return None
+
+            def swap(txt, name, body):
+                r = find_defn(txt, name)
+                if not r:
+                    sys.exit("[!] definition of %s not found" % name)
+                lines = txt.split("\n")
+                lines[r[0]:r[1] + 1] = body.split("\n")
+                return "\n".join(lines)
+
+            C_HASH = """static u32 filenametr_hash(struct hashtab *h, const void *k)
+        {
+            const struct filename_trans *ft = k;
+            unsigned long hash;
+            unsigned int byte_num;
+            unsigned char focus;
+
+            hash = ft->stype ^ ft->ttype ^ ft->tclass;
+
+            byte_num = 0;
+            while ((focus = ft->name[byte_num++]))
+                hash = partial_name_hash(focus, hash);
+            return hash & (h->size - 1);
+        }"""
+
+            C_CMP = """static int filenametr_cmp(struct hashtab *h, const void *k1, const void *k2)
+        {
+            const struct filename_trans *ft1 = k1;
+            const struct filename_trans *ft2 = k2;
+            int v;
+
+            v = ft1->stype - ft2->stype;
+            if (v)
+                return v;
+
+            v = ft1->ttype - ft2->ttype;
+            if (v)
+                return v;
+
+            v = ft1->tclass - ft2->tclass;
+            if (v)
+                return v;
+
+            return strcmp(ft1->name, ft2->name);
+        }"""
+
+            C_FTRANS = """static bool add_filename_trans(struct policydb *db, const char *s,
+                       const char *t, const char *c, const char *d,
+                       const char *o)
+        {
+            struct type_datum *src, *tgt, *def;
+            struct class_datum *cls;
+            struct filename_trans *ft;
+            struct filename_trans_datum *otype;
+            int rc;
+
+            src = symtab_search(&db->p_types, s);
+            if (src == NULL) {
+                pr_warn("source type %s does not exist\\n", s);
+                return false;
+            }
+            tgt = symtab_search(&db->p_types, t);
+            if (tgt == NULL) {
+                pr_warn("target type %s does not exist\\n", t);
+                return false;
+            }
+            cls = symtab_search(&db->p_classes, c);
+            if (cls == NULL) {
+                pr_warn("class %s does not exist\\n", c);
+                return false;
+            }
+            def = symtab_search(&db->p_types, d);
+            if (def == NULL) {
+                pr_warn("default type %s does not exist\\n", d);
+                return false;
+            }
+
+            /* The legacy table keys on the source type as well, so there is one
+               entry per (stype, ttype, tclass, name) rather than a chain of
+               source-type bits hanging off a shared key. */
+            ft = kmalloc(sizeof(*ft), GFP_ATOMIC);
+            if (!ft) {
+                pr_err("add_filename_trans: alloc key failed\\n");
+                return false;
+            }
+            ft->stype = src->value;
+            ft->ttype = tgt->value;
+            ft->tclass = cls->value;
+            ft->name = kstrdup(o, GFP_ATOMIC);
+            if (!ft->name) {
+                pr_err("add_filename_trans: alloc name failed\\n");
+                kfree(ft);
+                return false;
+            }
+
+            otype = kmalloc(sizeof(*otype), GFP_ATOMIC);
+            if (!otype) {
+                pr_err("add_filename_trans: alloc datum failed\\n");
+                kfree(ft->name);
+                kfree(ft);
+                return false;
+            }
+            otype->otype = def->value;
+
+            if (ebitmap_set_bit(&db->filename_trans_ttypes, ft->ttype, 1)) {
+                pr_err("add_filename_trans: set ttypes failed\\n");
+                kfree(otype);
+                kfree(ft->name);
+                kfree(ft);
+                return false;
+            }
+
+            rc = hashtab_insert(db->filename_trans, ft, otype);
+            if (rc) {
+                /* -EEXIST means the rule is already present, which is the state the
+                   caller asked for. The kernel deliberately swallows this one too:
+                   propagating it would fail policy reload and the boot. */
+                kfree(otype);
+                kfree(ft->name);
+                kfree(ft);
+                if (rc != -EEXIST) {
+                    pr_err("add_filename_trans: hashtab insert failed\\n");
+                    return false;
+                }
+            }
+            return true;
+        }"""
+
+            C_HELPER = """static bool ksu_flex_ensure(struct flex_array **fa, size_t elemsz, unsigned int nr)
+        {
+            if (!*fa) {
+                *fa = flex_array_alloc(elemsz, nr, GFP_ATOMIC | __GFP_ZERO);
+                return *fa != NULL;
+            }
+            return flex_array_prealloc(*fa, 0, nr, GFP_ATOMIC | __GFP_ZERO) == 0;
+        }"""
+
+            C_ADDTYPE = """static bool add_type(struct policydb *db, const char *type_name, bool attr)
+        {
+            struct type_datum *type = symtab_search(&db->p_types, type_name);
+            if (type) {
+                pr_warn("Type %s already exists\\n", type_name);
+                return true;
+            }
+
+            u32 value = ++db->p_types.nprim;
+            type = (struct type_datum *)kzalloc(sizeof(struct type_datum), GFP_ATOMIC);
+            if (!type) {
+                pr_err("add_type: alloc type_datum failed.\\n");
+                return false;
+            }
+
+            type->primary = 1;
+            type->value = value;
+            type->attribute = attr;
+
+            char *key = kstrdup(type_name, GFP_ATOMIC);
+            if (!key) {
+                pr_err("add_type: alloc key failed.\\n");
+                return false;
+            }
+
+            if (symtab_insert(&db->p_types, key, type)) {
+                pr_err("add_type: insert symtab failed.\\n");
+                return false;
+            }
+
+            /* These three are struct flex_array in this tree, so they have to grow
+               through flex_array_alloc/prealloc rather than plain realloc. */
+            if (!ksu_flex_ensure(&db->type_attr_map_array, sizeof(struct ebitmap), value) ||
+                !ksu_flex_ensure(&db->type_val_to_struct_array, sizeof(struct type_datum *), value) ||
+                !ksu_flex_ensure(&db->sym_val_to_name[SYM_TYPES], sizeof(char *), value)) {
+                pr_err("add_type: grow policydb arrays failed\\n");
+                return false;
+            }
+
+            ebitmap_init(flex_array_get_ptr(db->type_attr_map_array, value - 1));
+            ebitmap_set_bit(flex_array_get_ptr(db->type_attr_map_array, value - 1), value - 1, 1);
+            flex_array_put_ptr(db->type_val_to_struct_array, value - 1, type, GFP_ATOMIC);
+            flex_array_put_ptr(db->sym_val_to_name[SYM_TYPES], value - 1, key, GFP_ATOMIC);
+
+            int i;
+            for (i = 0; i < db->p_roles.nprim; ++i) {
+                ebitmap_set_bit(&db->role_val_to_struct[i]->types, value - 1, 1);
+            }
+
+            return true;
+        }"""
+
+            t = head(sep)
+            # The rhashtable key-params global is left dangling by the rewrite above
+            # and names a type this kernel does not have, so drop it.
+            t = re.sub(r"(?ms)^                lines = t.split("\n")
+                last_inc = max(i for i, ln in enumerate(lines) if ln.startswith("#include"))
+                lines.insert(last_inc + 1, "#include <linux/flex_array.h>")
+                t = "\n".join(lines)
+            t = swap(t, "filenametr_hash", C_HASH)
+            t = swap(t, "filenametr_cmp", C_CMP)
+            t = swap(t, "add_filename_trans", C_FTRANS)
+            t = swap(t, "add_type", C_HELPER + "\n\n" + C_ADDTYPE)
+            sep.write_text(t)
+            print("[+] sepolicy ported to hashtab/flex_array: 4 functions")
+
         # 19. SukiSU ships kernel/selinux/selinux.h, which shadows the
         #     kernel's internal header of the same name, so selinux_cred()
         #     arrives undeclared -- and this tree does not define it at all.

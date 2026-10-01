@@ -821,18 +821,116 @@ jobs:
                     hits += 1
             print("[+] %s: added %s to %d files" % (sym, hdr, hits))
 
-        # 12. pkg_observer.c is written against the 5.x fsnotify API
-        #     (handle_inode_event, fsnotify_add_inode_mark), which 4.14 does
-        #     not have. Its ksu_observer_init()/exit() are never called from
-        #     anywhere, so only its Makefile line keeps it in the build:
-        #     drop that line rather than port a whole subsystem.
-        fsh = kl / "fsnotify.h"
-        mk = base / "Makefile"
-        if fsh.is_file() and mk.is_file():
-            fst = head(fsh)
-            if "handle_inode_event" not in fst and "pkg_observer.o" in head(mk):
-                mk.write_text(head(mk).replace("kernelsu-objs += pkg_observer.o\n", ""))
-                print("[+] pkg_observer.o dropped (needs 5.x fsnotify API)")
+        C_KSU_HANDLE_EVENT = (
+            "static int ksu_handle_event(struct fsnotify_group *group,\n"
+            "                            struct inode *inode,\n"
+            "                            struct fsnotify_mark *inode_mark,\n"
+            "                            struct fsnotify_mark *vfsmount_mark,\n"
+            "                            u32 mask, const void *data, int data_type,\n"
+            "                            const unsigned char *file_name, u32 cookie,\n"
+            "                            struct fsnotify_iter_info *iter_info)\n"
+            "{\n"
+            "    if (data_type != FSNOTIFY_EVENT_INODE)\n"
+            "        return 0;\n"
+            "    if (!file_name)\n"
+            "        return 0;\n"
+            "    if (mask & FS_ISDIR)\n"
+            "        return 0;\n"
+            "    if (strlen((const char *)file_name) == 13 &&\n"
+            "        !memcmp(file_name, \"packages.list\", 13)) {\n"
+            "        pr_info(\"packages.list detected: %d\\n\", mask);\n"
+            "        if (ksu_uid_scanner_enabled) {\n"
+            "            ksu_request_userspace_scan();\n"
+            "        }\n"
+            "        track_throne(false);\n"
+            "    }\n"
+            "    return 0;\n"
+            "}\n"
+        )
+
+        # 12. pkg_observer.c is written against the 5.x fsnotify API. 4.14's
+        #     struct fsnotify_ops has no handle_inode_event member: events
+        #     arrive through the single handle_event callback, and marks are
+        #     installed with fsnotify_add_mark() instead of
+        #     fsnotify_add_inode_mark(). ksu_observer_init() is called from
+        #     ksud.c and ksu_observer_exit() from ksu.c, so the file cannot
+        #     just be dropped from the build -- port it.
+        pob = base / "pkg_observer.c"
+        if pob.is_file():
+            pt = head(pob)
+            pt, n_cb = re.subn(
+                r"static int ksu_handle_inode_event\(.*?\n\}\n",
+                C_KSU_HANDLE_EVENT, pt, count=1, flags=re.S)
+            pt, n_op = re.subn(r"\.handle_inode_event = ksu_handle_inode_event,",
+                               ".handle_event = ksu_handle_event,", pt)
+            pt, n_mark = re.subn(r"fsnotify_add_inode_mark\((\w+), (\w+), 0\)",
+                                 r"fsnotify_add_mark(\1, \2, NULL, 0)", pt)
+            if n_cb and n_op and n_mark:
+                pob.write_text(pt)
+                print("[+] pkg_observer.c ported to 4.14 fsnotify API "
+                      "(callback %d, ops %d, mark %d)" % (n_cb, n_op, n_mark))
+            elif n_cb or n_op or n_mark:
+                raise SystemExit("pkg_observer.c: partial fsnotify port "
+                                 "(cb=%d ops=%d mark=%d)" % (n_cb, n_op, n_mark))
+
+        # 12b. SukiSU's kernel_umount.c calls path_umount(), which upstream
+        #      only grew in 4.17. This 4.14 tree has neither path_umount() nor
+        #      an exported do_umount(): do_umount() here is
+        #      "static int do_umount(struct mount *mnt, int flags)", so
+        #      modules cannot unmount a path at all. Backport upstream's
+        #      path_umount() into fs/namespace.c, reusing this tree's own
+        #      check_mnt()/do_umount()/mntput_no_expire() and exporting it.
+        nsc = ksrc / "fs/namespace.c"
+        phh = ksrc / "include/linux/path.h"
+        ANCHOR_NS = "\n#ifdef __ARCH_WANT_SYS_OLDUMOUNT\n"
+        C_PATH_UMOUNT = (
+            "/*\n"
+            " * Backport of upstream path_umount() (added in 4.17) so that modules\n"
+            " * such as SukiSU's kernel_umount can unmount a mount by path. Modelled\n"
+            " * on the umount2 syscall body in this file.\n"
+            " */\n"
+            "int path_umount(const struct path *path, int flags)\n"
+            "{\n"
+            "\tstruct mount *mnt = real_mount(path->mnt);\n"
+            "\tint retval = -EINVAL;\n"
+            "\n"
+            "\tif (path->dentry != path->mnt->mnt_root)\n"
+            "\t\tgoto out;\n"
+            "\tif (!check_mnt(mnt))\n"
+            "\t\tgoto out;\n"
+            "\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n"
+            "\t\tgoto out;\n"
+            "\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN)) {\n"
+            "\t\tretval = -EPERM;\n"
+            "\t\tgoto out;\n"
+            "\t}\n"
+            "\n"
+            "\tretval = do_umount(mnt, flags);\n"
+            "out:\n"
+            "\t/* we mustn't call path_put() as that would clear mnt_expiry_mark */\n"
+            "\tdput(path->dentry);\n"
+            "\tmntput_no_expire(mnt);\n"
+            "\treturn retval;\n"
+            "}\n"
+            "EXPORT_SYMBOL_GPL(path_umount);\n"
+        )
+        if nsc.is_file() and phh.is_file():
+            ns, ph = head(nsc), head(phh)
+            if "EXPORT_SYMBOL_GPL(path_umount)" not in ns:
+                if ANCHOR_NS not in ns:
+                    raise SystemExit("fs/namespace.c: __ARCH_WANT_SYS_OLDUMOUNT "
+                                     "anchor not found")
+                ns = ns.replace(ANCHOR_NS, C_PATH_UMOUNT + ANCHOR_NS, 1)
+                nsc.write_text(ns)
+            if "path_umount" not in ph:
+                ph = ph.replace(
+                    "extern void path_put(const struct path *);",
+                    "extern void path_put(const struct path *);\n"
+                    "extern int path_umount(const struct path *path, int flags);",
+                    1)
+                phh.write_text(ph)
+            print("[+] path_umount() backported into fs/namespace.c "
+                  "+ declared in include/linux/path.h")
 
         # 11. clone3 (and its __NR_clone3) arrived in 5.3. 4.14 only has
         #     clone, so the "same shape as clone" check must use clone alone.

@@ -729,6 +729,12 @@ jobs:
             t = swap(t, "filenametr_cmp", C_CMP)
             t = swap(t, "add_filename_trans", C_FTRANS)
             t = swap(t, "add_type", C_HELPER + "\n\n" + C_ADDTYPE)
+            # Every remaining direct index of type_attr_map_array has to go
+            # through flex_array_get_ptr too.
+            t = re.sub(r"&db->type_attr_map_array\[([^\]]+)\]",
+                       r"flex_array_get_ptr(db->type_attr_map_array, \1)", t)
+            t = re.sub(r"db->type_attr_map_array\[([^\]]+)\]",
+                       r"flex_array_get_ptr(db->type_attr_map_array, \1)", t)
             sep.write_text(t)
             print("[+] sepolicy ported to hashtab/flex_array: 4 functions")
 

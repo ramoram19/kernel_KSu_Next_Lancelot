@@ -486,7 +486,9 @@ jobs:
 
         # 13. Symbols that live in a different header on 4.14. Add the
         #     header that this tree actually declares them in.
-        for sym, hdr in [("MNT_DETACH", "linux/fs.h")]:
+        for sym, hdr in [("MNT_DETACH", "linux/fs.h"),
+                         ("get_random_bytes", "linux/random.h"),
+                         ("get_task_struct", "linux/sched/task.h")]:
             kdef = kl / hdr.replace("linux/", "", 1)
             if not kdef.is_file():
                 continue

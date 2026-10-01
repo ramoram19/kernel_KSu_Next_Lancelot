@@ -336,6 +336,46 @@ jobs:
                     hits += n2
             print("[+] force_sig -> force_sig(sig, current): %d sites" % hits)
 
+        # 15. anon_inode_getfd_secure() is 5.x+. 4.14 has anon_inode_getfd()
+        #     with four arguments and no trailing security context.
+        an = kl / "anon_inodes.h"
+        if not an.is_file():
+            sys.exit("[!] %s not found" % an)
+        if "anon_inode_getfd_secure" not in head(an):
+            if "anon_inode_getfd" not in head(an):
+                sys.exit("[!] no anon_inode_getfd in anon_inodes.h")
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                t2 = t.replace("#define getfd_secure anon_inode_getfd_secure",
+                               "#define getfd_secure anon_inode_getfd")
+                t2, n2 = re.subn(r"(getfd_secure\s*\([^;]*?),\s*NULL\s*\)", r"\1)", t2)
+                if t2 != t:
+                    if "#include <linux/anon_inodes.h>" not in t2:
+                        t2 = "#include <linux/anon_inodes.h>\n" + t2
+                    p.write_text(t2)
+                    hits += 1
+            print("[+] anon_inode_getfd_secure -> anon_inode_getfd in %d files" % hits)
+
+        # 16. selinux_inode() does not exist in 4.14 (it arrived with the 5.x
+        #     SELinux rework). It is only used to stamp ksu_file_sid on the
+        #     anon inode; without a way to write the sid from outside the
+        #     hooks file, let the inode keep the creator's own context.
+        sh = kl.parent.parent / "security/selinux/hooks.h"
+        has_selinux_inode = sh.is_file() and "selinux_inode" in head(sh)
+        if not has_selinux_inode:
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                if re.search(r"\bselinux_inode\s*\(", t):
+                    t = re.sub(r"\bselinux_inode\s*\(", "ksu_selinux_inode(", t)
+                    t = ("#ifndef ksu_selinux_inode\n"
+                         "#define ksu_selinux_inode(inode) NULL\n"
+                         "#endif\n" + t)
+                    p.write_text(t)
+                    hits += 1
+            print("[+] selinux_inode -> NULL shim in %d files (absent in 4.14)" % hits)
+
         # 13. Symbols that live in a different header on 4.14. Add the
         #     header that this tree actually declares them in.
         for sym, hdr in [("MNT_DETACH", "linux/fs.h")]:

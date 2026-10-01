@@ -932,6 +932,21 @@ jobs:
             print("[+] path_umount() backported into fs/namespace.c "
                   "+ declared in include/linux/path.h")
 
+        # 12c. kernel_umount.c carries its own
+        #      "extern int path_umount(struct path *path, int flags);", which
+        #      now conflicts with the const-correct declaration coming from
+        #      linux/path.h. The file already includes <linux/path.h>, so drop
+        #      the local redeclaration.
+        kum = base / "kernel_umount.c"
+        if kum.is_file():
+            kt, n_kum = re.subn(
+                r"extern int path_umount\(struct path \*path, int flags\);\n",
+                "", head(kum))
+            if n_kum:
+                kum.write_text(kt)
+                print("[+] kernel_umount.c: dropped local path_umount() "
+                      "declaration (now in linux/path.h)")
+
         # 11. clone3 (and its __NR_clone3) arrived in 5.3. 4.14 only has
         #     clone, so the "same shape as clone" check must use clone alone.
         hits = 0

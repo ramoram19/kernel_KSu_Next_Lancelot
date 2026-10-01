@@ -376,6 +376,114 @@ jobs:
                     hits += 1
             print("[+] selinux_inode -> NULL shim in %d files (absent in 4.14)" % hits)
 
+        # 17. __poll_t appeared after 4.14, which used plain unsigned int for
+        #     the poll return type.
+        tys = kl / "types.h"
+        if not tys.is_file():
+            sys.exit("[!] %s not found" % tys)
+        if "__poll_t" not in head(tys):
+            hits = 0
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                if "__poll_t" in t:
+                    p.write_text(t.replace("__poll_t", "unsigned int"))
+                    hits += 1
+            print("[+] __poll_t -> unsigned int in %d files" % hits)
+
+        # 18. file_operations grew members this 4.14 tree has no slot for:
+        #     iopoll (5.7), remap_file_range and fadvise (5.1),
+        #     mmap_supported_flags (5.8). The wrapper installs proxies with
+        #     "p->ops.<member> = ..." and dereferences "->f_op-><member>",
+        #     so both the assignment and the proxy body have to go.
+        fsh2 = kl / "fs.h"
+        if not fsh2.is_file():
+            sys.exit("[!] %s not found" % fsh2)
+        ftxt = head(fsh2)
+        try:
+            a = ftxt.index("struct file_operations {")
+            b = ftxt.index("\n};", a)
+        except ValueError:
+            sys.exit("[!] could not locate struct file_operations")
+        body = ftxt[a:b]
+        have = set()
+        for line in body.splitlines():
+            line = line.split("//")[0]
+            mm = re.search(r"\(\s*\*\s*(\w+)\s*\)\s*\(", line)
+            if mm:
+                have.add(mm.group(1))
+                continue
+            if line.strip().endswith(";"):
+                tail = re.findall(r"(\w+)\s*;$", line.strip())
+                if tail:
+                    have.add(tail[-1])
+        # Sanity check: a parse slip here would silently strip live members
+        # such as .owner, so refuse to continue unless the basics came back.
+        for need in ("owner", "read", "write", "open", "release", "poll", "llseek"):
+            if need not in have:
+                sys.exit("[!] file_operations parse looks wrong (no %r); aborting" % need)
+
+        def kill_fns(txt, member):
+            """Wrap whole function definitions that dereference ->member.
+
+            Matched by top-level block rather than by "static ... {" on one
+            line: several proxies are declared "void ..." or have the opening
+            brace on a continuation line, and both spellings slipped past a
+            single-line signature match.
+            """
+            lines = txt.split("\n")
+            spans = []
+            i = 0
+            n = len(lines)
+            while i < n:
+                ln = lines[i]
+                head_ok = (ln and not ln[0].isspace() and not ln.startswith("#")
+                           and re.match(r"^(static|const|struct|int|void|ssize_t|"
+                                        r"loff_t|unsigned|bool|long|char|__poll_t)\b", ln)
+                           and "(" in ln and not ln.rstrip().endswith(";"))
+                if not head_ok:
+                    i += 1
+                    continue
+                j = i
+                while j < n and lines[j] != "}":
+                    j += 1
+                if j >= n:
+                    break
+                if re.search(r"->\s*%s\b" % re.escape(member), "\n".join(lines[i:j + 1])):
+                    spans.append((i, j))
+                i = j + 1
+            for (i, j) in reversed(spans):
+                lines[i:j + 1] = ["#if 0"] + lines[i:j + 1] + ["#endif"]
+            return "\n".join(lines)
+
+        absent = set()
+        for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+            t = head(p)
+            # file_wrapper.c never spells out "file_operations": it only
+            # writes p->ops.<member> against an embedded fops, so match the
+            # access patterns rather than the type name.
+            absent |= set(re.findall(r"->\s*ops\s*\.\s*(\w+)\s*=", t))
+            absent |= set(re.findall(r"->\s*f_op\s*->\s*(\w+)", t))
+        absent = sorted(m for m in absent if m not in have)
+        hits = 0
+        for member in absent:
+            for p in list(base.rglob("*.c")) + list(base.rglob("*.h")):
+                t = head(p)
+                if ("->ops." not in t) and ("->f_op->" not in t):
+                    continue
+                if not re.search(r"(->\s*ops\s*\.\s*%s\s*=|->\s*f_op\s*->\s*%s\b)"
+                                 % (re.escape(member), re.escape(member)), t):
+                    continue
+                t = re.sub(r"^[^\n]*->\s*ops\s*\.\s*%s\s*=[^\n]*\n" % re.escape(member),
+                           "", t, flags=re.M)
+                t = kill_fns(t, member)
+                p.write_text(t)
+                hits += 1
+        if absent:
+            print("[+] fops members absent in 4.14, dropped: %s" % ", ".join(absent))
+            print("[+]   proxies neutralised in %d files" % hits)
+        else:
+            print("[=] every referenced file_operations member exists here")
+
         # 13. Symbols that live in a different header on 4.14. Add the
         #     header that this tree actually declares them in.
         for sym, hdr in [("MNT_DETACH", "linux/fs.h")]:

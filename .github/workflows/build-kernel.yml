@@ -484,6 +484,36 @@ jobs:
         else:
             print("[=] every referenced file_operations member exists here")
 
+        # 19. SukiSU ships kernel/selinux/selinux.h, which shadows the
+        #     kernel's internal header of the same name, so selinux_cred()
+        #     arrives undeclared -- and this tree does not define it at all.
+        #     Its SELinux hooks keep the per-cred blob in cred->security,
+        #     which is exactly what selinux_cred() would hand back.
+        slh = base / "selinux/selinux.h"
+        slc = base / "selinux/selinux.c"
+        if not (slh.is_file() and slc.is_file()):
+            sys.exit("[!] %s / %s not found" % (slh, slc))
+        if "selinux_cred" not in head(slh):
+            objsec = ksrc / "security/selinux/include/objsec.h"
+            credh = kl / "cred.h"
+            if not (objsec.is_file() and credh.is_file()):
+                sys.exit("[!] %s or %s not found" % (objsec, credh))
+            if "task_security_struct" not in head(objsec):
+                sys.exit("[!] task_security_struct missing from %s" % objsec)
+            if not re.search(r"void\s*\*\s*security\s*;", head(credh)):
+                sys.exit("[!] struct cred has no ->security member")
+            t = head(slc)
+            t, n = re.subn(r"\bselinux_cred\s*\(\s*cred\s*\)",
+                           "ksu_cred_tsec(cred)", t)
+            helper = ("\nstatic inline const struct task_security_struct *\n"
+                      "ksu_cred_tsec(const struct cred *cred)\n{\n"
+                      "\treturn (const struct task_security_struct *)cred->security;\n}\n")
+            lines = t.split("\n")
+            last_inc = max(i for i, ln in enumerate(lines) if ln.startswith("#include"))
+            lines.insert(last_inc + 1, helper)
+            slc.write_text("\n".join(lines))
+            print("[+] selinux_cred -> cred->security, %d call sites" % n)
+
         # 13. Symbols that live in a different header on 4.14. Add the
         #     header that this tree actually declares them in.
         for sym, hdr in [("MNT_DETACH", "linux/fs.h"),
